@@ -5,10 +5,6 @@ import numpy as np
 # The size of a hash value in number of bytes
 hashvalue_byte_size = len(bytes(np.int64(42).data))
 
-# http://en.wikipedia.org/wiki/Mersenne_prime
-_mersenne_prime = (1 << 61) - 1
-_max_hash = (1 << 32) - 1
-_hash_range = (1 << 32)
 
 class MinHash(object):
     '''MinHash is a probabilistic data structure for computing 
@@ -54,16 +50,29 @@ class MinHash(object):
     '''
 
     def __init__(self, num_perm=128, seed=1, hashobj=sha1,
-            hashvalues=None, permutations=None):
+            hashvalues=None, permutations=None, n_bytes=4):
+        if n_bytes in [1, 2, 4, 8]:
+            self.n_bytes = n_bytes
+            self._max_hash = (1 << (2**(n_bytes+1))) - 1
+            self._hash_range = (1 << (2**(n_bytes+1)))
+            self.fmt = {1: '<B', 2: '<H', 4: '<I', 8: '<Q'}
+            self.dtype = np.dtype(self.fmt[n_bytes])  # np.dtype('<Q')  
+            # http://en.wikipedia.org/wiki/Mersenne_prime
+            self.mp = {1: 2, 2: 13, 4: 31, 8: 61}
+            self._mersenne_prime = (1 << self.mp[n_bytes]) - 1
+        else:
+            raise ValueError("n_bytes must be 1, 2, 4 or 8")
+
         if hashvalues is not None:
             num_perm = len(hashvalues)
-        if num_perm > _hash_range:
+        if num_perm > self._hash_range:
             # Because 1) we don't want the size to be too large, and
             # 2) we are using 4 bytes to store the size value
             raise ValueError("Cannot have more than %d number of\
-                    permutation functions" % _hash_range)
+                    permutation functions" % self._hash_range)
         self.seed = seed
         self.hashobj = hashobj
+
         # Initialize hash values
         if hashvalues is not None:
             self.hashvalues = self._parse_hashvalues(hashvalues)
@@ -77,17 +86,17 @@ class MinHash(object):
             # Create parameters for a random bijective permutation function
             # that maps a 32-bit hash value to another 32-bit hash value.
             # http://en.wikipedia.org/wiki/Universal_hashing
-            self.permutations = np.array([(generator.randint(1, _mersenne_prime, dtype=np.uint64),
-                                           generator.randint(0, _mersenne_prime, dtype=np.uint64))
-                                          for _ in range(num_perm)], dtype=np.uint64).T
+            self.permutations = np.array([(generator.randint(1, self._mersenne_prime, dtype=self.dtype),
+                                           generator.randint(0, self._mersenne_prime, dtype=self.dtype))
+                                          for _ in range(num_perm)], dtype=self.dtype).T
         if len(self) != len(self.permutations[0]):
             raise ValueError("Numbers of hash values and permutations mismatch")
 
     def _init_hashvalues(self, num_perm):
-        return np.ones(num_perm, dtype=np.uint64)*_max_hash
+        return np.ones(num_perm, dtype=self.dtype)*self._max_hash
 
     def _parse_hashvalues(self, hashvalues):
-        return np.array(hashvalues, dtype=np.uint64)
+        return np.array(hashvalues, dtype=self.dtype)
 
     def update(self, b):
         '''Update this MinHash with a new value.
@@ -102,9 +111,9 @@ class MinHash(object):
 
                 minhash.update("new value".encode('utf-8'))
         '''
-        hv = struct.unpack('<I', self.hashobj(b).digest()[:4])[0]
+        hv = struct.unpack(self.fmt[self.n_bytes], self.hashobj(b).digest()[:self.n_bytes])[0]
         a, b = self.permutations
-        phv = np.bitwise_and((a * hv + b) % _mersenne_prime, np.uint64(_max_hash))
+        phv = np.bitwise_and((a * hv + b) % self._mersenne_prime, self.dtype.type(self._max_hash))
         self.hashvalues = np.minimum(phv, self.hashvalues)
 
     def jaccard(self, other):
@@ -134,7 +143,7 @@ class MinHash(object):
             int: The estimated cardinality of the set represented by this MinHash.
         '''
         k = len(self)
-        return np.float(k) / np.sum(self.hashvalues / np.float(_max_hash)) - 1.0
+        return np.float(k) / np.sum(self.hashvalues / np.float(self._max_hash)) - 1.0
 
     def merge(self, other):
         '''Merge the other MinHash with this one, making this one the union
@@ -166,7 +175,7 @@ class MinHash(object):
             bool: If the current MinHash is empty - at the state of just
                 initialized.
         '''
-        if np.any(self.hashvalues != _max_hash):
+        if np.any(self.hashvalues != self._max_hash):
             return False
         return True
 

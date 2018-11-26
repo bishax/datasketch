@@ -1,5 +1,7 @@
 import struct
+import sys
 import numpy as np
+import io
 
 from datasketch import MinHash
 
@@ -60,6 +62,8 @@ class LeanMinHash(MinHash):
         self.hashvalues = self._parse_hashvalues(hashvalues)
 
     def __init__(self, minhash):
+        self.dtype = minhash.dtype
+        self.n_bytes = minhash.n_bytes
         self._initialize_slots(minhash.seed, minhash.hashvalues)
 
     def update(self, b):
@@ -87,14 +91,16 @@ class LeanMinHash(MinHash):
             int: Size in number of bytes after serialization.
         '''
         # Use 8 bytes to store the seed integer
-        seed_size = struct.calcsize(byteorder+'q')
+        seed_size = struct.calcsize(byteorder+'B')
         # Use 4 bytes to store the number of hash values
         length_size = struct.calcsize(byteorder+'i')
+        # Use 1 byte to store the number of bytes of each hash value
+        n_byte_size = struct.calcsize(byteorder+'B')
         # Use 4 bytes to store each hash value as we are using the lower 32 bit
-        hashvalue_size = struct.calcsize(byteorder+'I')
-        return seed_size + length_size + len(self) * hashvalue_size
+        hashvalue_size = struct.calcsize(byteorder+self.dtype.char)
+        return seed_size + length_size + n_byte_size + len(self) * hashvalue_size
 
-    def serialize(self, buf, byteorder='@'):
+    def serialize(self, buf, byteorder='@', offset=0):
         '''
         Serialize this lean MinHash and store the result in an allocated buffer.
 
@@ -137,12 +143,12 @@ class LeanMinHash(MinHash):
         .. _`bytearray`: https://docs.python.org/3.6/library/functions.html#bytearray
         .. _`byteorder`: https://docs.python.org/3/library/struct.html
         '''
-        if len(buf) < self.bytesize():
+        if (not isinstance(buf, io.BufferedWriter)) and (len(buf) < self.bytesize()):
             raise ValueError("The buffer does not have enough space\
                     for holding this MinHash.")
-        fmt = "%sqi%dI" % (byteorder, len(self))
-        struct.pack_into(fmt, buf, 0,
-                self.seed, len(self), *self.hashvalues)
+        fmt = f"{byteorder}HBB{len(self)}{self.dtype.char}"
+        struct.pack_into(fmt, buf, offset,
+                len(self), self.seed, self.dtype.itemsize, *self.hashvalues)
 
     @classmethod
     def deserialize(cls, buf, byteorder='@'):
@@ -168,39 +174,50 @@ class LeanMinHash(MinHash):
 
                 lean_minhash = LeanMinHash.deserialize(buf)
         '''
-        fmt_seed_size = "%sqi" % byteorder
-        fmt_hash = byteorder + "%dI"
+        byteorder = '<' if sys.byteorder == 'little' else '>'
+
+        fmt_seed_size = f"{byteorder}HBB"
         try:
-            seed, num_perm = struct.unpack_from(fmt_seed_size, buf, 0)
+            num_perm, seed, n_bytes = struct.unpack_from(fmt_seed_size, buf, 0)
         except TypeError:
-            seed, num_perm = struct.unpack_from(fmt_seed_size, buffer(buf), 0)
+            num_perm, seed, n_bytes = struct.unpack_from(fmt_seed_size, buffer(buf), 0)
         offset = struct.calcsize(fmt_seed_size)
+        dtype = np.dtype(f"{byteorder}u{n_bytes}")
+
+        fmt_hash = byteorder + f"{num_perm}{dtype.char}"
         try:
-            hashvalues = struct.unpack_from(fmt_hash % num_perm, buf, offset)
+            hashvalues = struct.unpack_from(fmt_hash, buf, offset)
         except TypeError:
-            hashvalues = struct.unpack_from(fmt_hash % num_perm, buffer(buf), offset)
+            hashvalues = struct.unpack_from(fmt_hash, buffer(buf), offset)
+
         lmh = object.__new__(LeanMinHash)
+        lmh.dtype = dtype
+        lmh.n_bytes = n_bytes
         lmh._initialize_slots(seed, hashvalues)
         return lmh
 
-    def __getstate__(self):
-        buf = bytearray(self.bytesize())
-        fmt = "qi%dI" % len(self)
-        struct.pack_into(fmt, buf, 0,
-                self.seed, len(self), *self.hashvalues)
-        return buf
+    # TODO: reimplement these functions and resolve the conflict with joblib
 
-    def __setstate__(self, buf):
-        try:
-            seed, num_perm = struct.unpack_from('qi', buf, 0)
-        except TypeError:
-            seed, num_perm = struct.unpack_from('qi', buffer(buf), 0)
-        offset = struct.calcsize('qi')
-        try:
-            hashvalues = struct.unpack_from('%dI' % num_perm, buf, offset)
-        except TypeError:
-            hashvalues = struct.unpack_from('%dI' % num_perm, buffer(buf), offset)
-        self._initialize_slots(seed, hashvalues)
+    # def __getstate__(self):
+    #     assert 0 
+    #     buf = bytearray(self.bytesize())
+    #     fmt = "qiB%dI" % len(self)
+    #     struct.pack_into(fmt, buf, 0,
+    #             self.seed, len(self), *self.hashvalues)
+    #     return buf
+
+    # def __setstate__(self, buf):
+    #     assert 0
+    #     try:
+    #         seed, num_perm = struct.unpack_from('qi', buf, 0)
+    #     except TypeError:
+    #         seed, num_perm = struct.unpack_from('qi', buffer(buf), 0)
+    #     offset = struct.calcsize('qi')
+    #     try:
+    #         hashvalues = struct.unpack_from('%dI' % num_perm, buf, offset)
+    #     except TypeError:
+    #         hashvalues = struct.unpack_from('%dI' % num_perm, buffer(buf), offset)
+    #     self._initialize_slots(seed, hashvalues)
 
     def __hash__(self):
         return hash((self.seed, tuple(self.hashvalues)))

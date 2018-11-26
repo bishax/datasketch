@@ -6,6 +6,7 @@ from datasketch.weighted_minhash import WeightedMinHash, WeightedMinHashGenerato
 from datasketch.lshforest import MinHashLSHForest
 from datasketch.lshensemble import MinHashLSHEnsemble
 from datasketch.lean_minhash import LeanMinHash
+from datasketch.lshhybrid import MinHashLSHHybrid
 
 # Alias
 WeightedMinHashLSH = MinHashLSH
